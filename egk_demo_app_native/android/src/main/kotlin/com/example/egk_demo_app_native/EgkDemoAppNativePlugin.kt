@@ -9,6 +9,14 @@ import android.nfc.tech.IsoDep
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import de.gematik.egk.healthcardaccess.HealthCard
+import de.gematik.egk.healthcardaccess.cardobjects.ApplicationIdentifier
+import de.gematik.egk.healthcardaccess.cardobjects.DedicatedFile
+import de.gematik.egk.healthcardaccess.cardobjects.ShortFileIdentifier
+import de.gematik.egk.healthcardcontrol.operations.selectDedicated
+import de.gematik.egk.healthcardcontrol.operations.readFile
+import de.gematik.egk.healthcardcontrol.securemessaging.openSecureSession
+import de.gematik.egk.nfccardreaderprovider.NFCCard
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -138,14 +146,8 @@ class EgkDemoAppNativePlugin :
                     return@launch
                 }
 
-                isoDep.connect()
-                isoDep.timeout = 5000 // 5 seconds timeout
-
-                sendEvent("reading")
-
-                val egkData = readCardData(isoDep)
-
-                isoDep.close()
+                // Pass the tag to readCardData instead of isoDep
+                val egkData = readCardData(tag, isoDep)
 
                 mainHandler.post {
                     sendEvent("success")
@@ -165,85 +167,97 @@ class EgkDemoAppNativePlugin :
         }
     }
 
-    private fun readCardData(isoDep: IsoDep): Map<String, Any?> {
-        // Select HCA (Health Care Application) AID: D27600000102
-        val hcaAid = byteArrayOf(0xD2.toByte(), 0x76, 0x00, 0x00, 0x01, 0x02)
-        val selectCommand = byteArrayOf(
-            0x00, 0xA4.toByte(), 0x04, 0x0C,
-            hcaAid.size.toByte()
-        ) + hcaAid
-
-        val selectResponse = isoDep.transceive(selectCommand)
-        if (!checkSuccess(selectResponse)) {
-            throw Exception("Failed to select HCA application: ${selectResponse.toHexString()}")
+    private fun readCardData(tag: Tag, isoDep: IsoDep): Map<String, Any?> {
+        // This method is no longer used directly - PACE authentication is required
+        // Create NFCCard wrapper
+        val nfcCard = NFCCard.fromTag(tag)
+            ?: throw Exception("Failed to create NFCCard from tag")
+        
+        // Connect
+        nfcCard.connect()
+        
+        try {
+            // Create HealthCard
+            val healthCard = HealthCard(nfcCard)
+            
+            // Establish PACE secure channel with CAN
+            val can = pendingCan ?: throw Exception("CAN not provided")
+            sendEvent("authenticating")
+            val secureHealthCard = runBlocking {
+                healthCard.openSecureSession(can)
+            }
+            
+            sendEvent("reading")
+            
+            // Select HCA (Health Care Application) AID: D27600000102
+            val hcaAid = ApplicationIdentifier.create(byteArrayOf(
+                0xD2.toByte(), 0x76, 0x00, 0x00, 0x01, 0x02
+            ))
+            val hcaDf = DedicatedFile(hcaAid)
+            runBlocking {
+                secureHealthCard.selectDedicated(hcaDf)
+            }
+            
+            // Read EF.PD (Personal Data) - SFID: 01
+            // First read to get the length header
+            val personalDataHeader = runBlocking {
+                secureHealthCard.readFile(
+                    ShortFileIdentifier.create(0x01u),
+                    expectedSize = 2
+                )
+            }
+            
+            // Parse the length (little-endian: low byte + high byte)
+            val expectedLength = (personalDataHeader[0].toInt() and 0xFF) or 
+                                ((personalDataHeader[1].toInt() and 0xFF) shl 8)
+            
+            // Now read the complete file with the correct expected size
+            val personalData = runBlocking {
+                secureHealthCard.readFile(
+                    ShortFileIdentifier.create(0x01u),
+                    expectedSize = expectedLength + 2  // +2 for the length header itself
+                )
+            }
+            
+            val personalDataXml = decompressAndDecodeEF_PD(personalData)
+            val parsedPersonalData = parsePersonalDataXml(personalDataXml)
+            
+            // Read EF.VD (Insurance Data) - SFID: 02
+            // First read to get the header with offsets (8 bytes)
+            val insuranceDataHeader = runBlocking {
+                secureHealthCard.readFile(
+                    ShortFileIdentifier.create(0x02u),
+                    expectedSize = 8
+                )
+            }
+            
+            // Parse the VD end offset to determine total size needed (big-endian)
+            val vdOffsetEnd = ((insuranceDataHeader[2].toInt() and 0xFF) shl 8) or 
+                             (insuranceDataHeader[3].toInt() and 0xFF)
+            
+            // Now read the complete file with the correct expected size
+            val insuranceData = runBlocking {
+                secureHealthCard.readFile(
+                    ShortFileIdentifier.create(0x02u),
+                    expectedSize = vdOffsetEnd + 1  // +1 because offset is inclusive
+                )
+            }
+            
+            val insuranceDataXml = decompressAndDecodeEF_VD(insuranceData)
+            val parsedInsuranceData = parseInsuranceDataXml(insuranceDataXml)
+            
+            return mapOf(
+                "personalData" to parsedPersonalData,
+                "insuranceData" to parsedInsuranceData,
+                "rawPersonalDataXml" to personalDataXml,
+                "rawInsuranceDataXml" to insuranceDataXml
+            )
+        } finally {
+            nfcCard.disconnect(false)
         }
-
-        // Read EF.PD (Personal Data) - SFID: 01
-        val personalData = readFile(isoDep, 0x01)
-        val personalDataXml = decompressAndDecode(personalData)
-        val parsedPersonalData = parsePersonalDataXml(personalDataXml)
-
-        // Read EF.VD (Insurance Data) - SFID: 02
-        val insuranceData = readFile(isoDep, 0x02)
-        val insuranceDataXml = decompressAndDecode(insuranceData)
-        val parsedInsuranceData = parseInsuranceDataXml(insuranceDataXml)
-
-        return mapOf(
-            "personalData" to parsedPersonalData,
-            "insuranceData" to parsedInsuranceData,
-            "rawPersonalDataXml" to personalDataXml,
-            "rawInsuranceDataXml" to insuranceDataXml
-        )
     }
-
-    private fun readFile(isoDep: IsoDep, sfid: Int): ByteArray {
-        val result = ByteArrayOutputStream()
-        var offset = 0
-
-        while (true) {
-            // READ BINARY with short file identifier
-            val p1 = (0x80 or sfid).toByte()
-            val p2 = (offset and 0xFF).toByte()
-
-            val readCommand = byteArrayOf(0x00, 0xB0.toByte(), p1, p2, 0x00)
-            val response = isoDep.transceive(readCommand)
-
-            if (response.size < 2) {
-                throw Exception("Invalid response")
-            }
-
-            val sw1 = response[response.size - 2].toInt() and 0xFF
-            val sw2 = response[response.size - 1].toInt() and 0xFF
-            val data = response.copyOfRange(0, response.size - 2)
-
-            when {
-                sw1 == 0x90 && sw2 == 0x00 -> {
-                    result.write(data)
-                    offset += data.size
-                }
-                sw1 == 0x62 && sw2 == 0x82 -> {
-                    // End of file warning
-                    result.write(data)
-                    break
-                }
-                sw1 == 0x6B && sw2 == 0x00 -> {
-                    // Wrong parameters - past end of file
-                    break
-                }
-                else -> {
-                    throw Exception("Read error: ${String.format("%02X%02X", sw1, sw2)}")
-                }
-            }
-
-            if (data.size < 256) {
-                break // Last chunk
-            }
-        }
-
-        return result.toByteArray()
-    }
-
-    private fun decompressAndDecode(data: ByteArray): String {
+    
+    private fun decompressAndDecodeEF_PD(data: ByteArray): String {
         if (data.size < 2) {
             throw Exception("Data too short")
         }
@@ -251,6 +265,43 @@ class EgkDemoAppNativePlugin :
         // First 2 bytes indicate length (little-endian)
         val length = (data[0].toInt() and 0xFF) or ((data[1].toInt() and 0xFF) shl 8)
         val compressedData = data.copyOfRange(2, minOf(2 + length, data.size))
+
+        // Check if data is gzip compressed (magic bytes 1f 8b)
+        val decompressedData = if (compressedData.size >= 2 &&
+            compressedData[0] == 0x1F.toByte() &&
+            compressedData[1] == 0x8B.toByte()) {
+            decompressGzip(compressedData)
+        } else {
+            compressedData
+        }
+
+        return String(decompressedData, Charsets.UTF_8)
+    }
+
+    private fun decompressAndDecodeEF_VD(data: ByteArray): String {
+        // EF.VD structure according to gemSpec_eGK_Fach_VSDM:
+        // - Offset Start VD: 2 bytes (big-endian)
+        // - Offset Ende VD: 2 bytes (big-endian)
+        // - Offset Start GVD: 2 bytes (big-endian)
+        // - Offset Ende GVD: 2 bytes (big-endian)
+        // - VD data: variable (gzip compressed XML)
+        // - GVD data: variable (gzip compressed XML, optional)
+        // Minimum offset value is 8 (header size)
+        if (data.size < 8) {
+            throw Exception("Data too short")
+        }
+
+        // Read offsets as big-endian (different from EF.PD which uses little-endian length)
+        val vdOffsetStart = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+        val vdOffsetEnd = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
+        // Bytes 4-7 are GVD offsets (Offset Start GVD, Offset Ende GVD) - not needed for VD
+        
+        if (vdOffsetStart < 8 || vdOffsetEnd >= data.size || vdOffsetStart >= vdOffsetEnd) {
+            throw Exception("Invalid VD offsets: start=$vdOffsetStart, end=$vdOffsetEnd, dataSize=${data.size}")
+        }
+
+        // Extract range [vdOffsetStart, vdOffsetEnd] inclusive (matching iOS implementation)
+        val compressedData = data.copyOfRange(vdOffsetStart, vdOffsetEnd + 1)
 
         // Check if data is gzip compressed (magic bytes 1f 8b)
         val decompressedData = if (compressedData.size >= 2 &&
@@ -365,13 +416,6 @@ class EgkDemoAppNativePlugin :
     private fun extractXmlSection(xml: String, tag: String): String? {
         val pattern = "<$tag>(.*?)</$tag>".toRegex(RegexOption.DOT_MATCHES_ALL)
         return pattern.find(xml)?.groupValues?.get(1)
-    }
-
-    private fun checkSuccess(response: ByteArray): Boolean {
-        if (response.size < 2) return false
-        val sw1 = response[response.size - 2].toInt() and 0xFF
-        val sw2 = response[response.size - 1].toInt() and 0xFF
-        return sw1 == 0x90 && sw2 == 0x00
     }
 
     private fun ByteArray.toHexString(): String = joinToString("") { "%02X".format(it) }
