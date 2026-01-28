@@ -272,6 +272,10 @@ class InsuranceData {
 
   String? _formatDate(String? date) {
     if (date == null || date.length != 8) return date;
+    if (DateTime.tryParse(date) case final dt?) {
+      return '${dt.day.toString().padLeft(2, '0')}.${dt.month.toString().padLeft(2, '0')}.${dt.year}';
+    }
+    
     final year = date.substring(0, 4);
     final month = date.substring(4, 6);
     final day = date.substring(6, 8);
