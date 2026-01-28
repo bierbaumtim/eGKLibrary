@@ -25,6 +25,9 @@ import de.gematik.egk.healthcardcontrol.securemessaging.KeyAgreement
 import de.gematik.egk.healthcardcontrol.securemessaging.SecureHealthCard
 import de.gematik.egk.healthcardcontrol.securemessaging.openSecureSession
 import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -147,9 +150,9 @@ class NFCHealthCardSession<Output>(
         }
         
         // Process the tag in a coroutine
-        kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        GlobalScope.launch(Dispatchers.IO) {
             try {
-                val result = processTag(tag)
+                val result: Output = processTag(tag)
                 if (continuation.isActive) {
                     continuation.resume(result)
                 }
@@ -283,9 +286,3 @@ private class DefaultNFCHealthCardSessionHandle(
         Log.d("NFCHealthCardSession", "Session invalidated${error?.let { ": $it" } ?: ""}")
     }
 }
-
-// Required import for coroutine scope
-private fun <T> kotlinx.coroutines.GlobalScope.launch(
-    context: kotlinx.coroutines.CoroutineDispatcher,
-    block: suspend kotlinx.coroutines.CoroutineScope.() -> T
-) = kotlinx.coroutines.GlobalScope.launch(context) { block() }

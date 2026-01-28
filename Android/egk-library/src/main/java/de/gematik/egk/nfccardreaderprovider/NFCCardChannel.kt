@@ -77,15 +77,15 @@ class NFCCardChannel(
                 )
             }
             
-            val sw1 = responseBytes[responseBytes.size - 2]
-            val sw2 = responseBytes[responseBytes.size - 1]
+            val sw1 = responseBytes[responseBytes.size - 2].toUByte()
+            val sw2 = responseBytes[responseBytes.size - 1].toUByte()
             val data = if (responseBytes.size > 2) {
                 responseBytes.copyOfRange(0, responseBytes.size - 2)
             } else {
-                null
+                byteArrayOf()
             }
             
-            APDU.Response(data, sw1, sw2)
+            APDU.Response.create(data, sw1, sw2)
         } catch (e: android.nfc.TagLostException) {
             throw CardError.ConnectionError(NFCCardError.TagLost)
         } catch (e: java.io.IOException) {
@@ -104,5 +104,5 @@ class NFCCardChannel(
 private fun CommandType.toLogicalChannel(channelNo: UByte): CommandType {
     // Modify CLA byte to indicate logical channel
     val newCla = ((this.cla.toInt() and 0xFC) or (channelNo.toInt() and 0x03)).toUByte()
-    return APDU.Command(newCla, this.ins, this.p1, this.p2, this.data, this.ne)
+    return APDU.Command.create(newCla, this.ins, this.p1, this.p2, this.data, this.ne)
 }

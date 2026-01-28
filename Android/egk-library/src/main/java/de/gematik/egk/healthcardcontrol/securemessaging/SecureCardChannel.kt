@@ -46,13 +46,13 @@ class SecureCardChannel(
     override val maxResponseLength: Int
         get() = channel.maxResponseLength
     
-    override suspend fun transmit(command: CommandType): ResponseType {
+    override suspend fun transmit(command: CommandType, writeTimeout: Long, readTimeout: Long): ResponseType {
         // Log the command header only (to prevent logging PIN)
-        val headerHex = byteArrayOf(command.cla, command.ins, command.p1, command.p2).toHexString()
+        val headerHex = byteArrayOf(command.cla.toByte(), command.ins.toByte(), command.p1.toByte(), command.p2.toByte()).toHexString()
         android.util.Log.d(TAG, ">> $headerHex...")
         
         val encryptedCommand = session.encrypt(command)
-        val encryptedResponse = channel.transmit(encryptedCommand)
+        val encryptedResponse = channel.transmit(encryptedCommand, writeTimeout, readTimeout)
         val decryptedApdu = session.decrypt(encryptedResponse)
         
         // Log the response
@@ -62,7 +62,7 @@ class SecureCardChannel(
         return decryptedApdu
     }
     
-    override fun close() {
+    override suspend fun close() {
         session.invalidate()
         channel.close()
     }

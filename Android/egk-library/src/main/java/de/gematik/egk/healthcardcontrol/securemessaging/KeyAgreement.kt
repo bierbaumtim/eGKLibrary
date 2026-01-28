@@ -24,10 +24,10 @@ import org.bouncycastle.asn1.ASN1InputStream
 import org.bouncycastle.asn1.ASN1ObjectIdentifier
 import org.bouncycastle.asn1.ASN1Sequence
 import org.bouncycastle.asn1.ASN1TaggedObject
-import org.bouncycastle.asn1.DERApplicationSpecific
+import org.bouncycastle.asn1.ASN1EncodableVector
+import org.bouncycastle.asn1.DERTaggedObject
 import org.bouncycastle.asn1.DEROctetString
 import org.bouncycastle.asn1.DERSequence
-import org.bouncycastle.asn1.DERTaggedObject
 import java.security.interfaces.ECPublicKey
 
 /**
@@ -90,10 +90,10 @@ object KeyAgreement {
                 
                 // Step 2: Generate first key pair, send PK1_PCD, receive PK1_PICC
                 // Calculate gTilde and generate PK2_PCD
-                val (pk2Pcd, keyPair2) = step2PaceEcdhGmAesCbcCmac128(card, nonceS)
+                val (pk2Pcd, keyPair2, gTilde) = step2PaceEcdhGmAesCbcCmac128(card, nonceS)
                 
                 // Step 3: Send PK2_PCD, receive PK2_PICC, derive PACE key
-                val (pk2Picc, paceKey) = step3PaceEcdhGmAesCbcCmac128(card, pk2Pcd, keyPair2)
+                val (pk2Picc, paceKey) = step3PaceEcdhGmAesCbcCmac128(card, pk2Pcd, keyPair2, gTilde)
                 
                 // Step 4: Verify MAC tokens
                 val verifyMacPicc = step4PaceEcdhGmAesCbcCmac128(
@@ -116,7 +116,7 @@ object KeyAgreement {
         card: HealthCardType,
         algorithm: Algorithm
     ) {
-        val key = Key(algorithm.affectedKeyId)
+        val key = Key.create(algorithm.affectedKeyId)
         val oid = algorithm.protocolIdentifier
         
         val selectPaceCommand = HealthCardCommand.ManageSE.selectPACE(
@@ -142,7 +142,10 @@ object KeyAgreement {
             ?: throw Error.UnexpectedFormedAnswerFromCard
         
         val nonceZ = extractPrimitive(responseData)
-            ?: throw Error.UnexpectedFormedAnswerFromCard
+        if (nonceZ == null) {
+            android.util.Log.e("KeyAgreement", "Failed to extract primitive from response data")
+            throw Error.UnexpectedFormedAnswerFromCard
+        }
         
         val derivedKey = KeyDerivationFunction.deriveKey(can, KeyDerivationFunction.Mode.PASSWORD)
         return AES.CBC128.decrypt(nonceZ, derivedKey)
@@ -152,11 +155,13 @@ object KeyAgreement {
      * Step 2: Generate first key pair, send PK1_PCD, receive PK1_PICC.
      * Calculate shared secret generating point gTilde.
      * Generate second key pair and PK2_PCD = gTilde * keyPair2.privateKey
+     * 
+     * @return Triple of (PK2_PCD, KeyPair2, gTilde)
      */
     private suspend fun step2PaceEcdhGmAesCbcCmac128(
         card: HealthCardType,
         nonceS: ByteArray
-    ): Pair<ECPublicKey, BrainpoolP256r1.KeyExchangeKeyPair> {
+    ): Triple<ECPublicKey, BrainpoolP256r1.KeyExchangeKeyPair, org.bouncycastle.math.ec.ECPoint> {
         val keyPair1 = BrainpoolP256r1.generateKeyPair()
         
         val paceStep2aCommand = HealthCardCommand.PACE.step2a(keyPair1.publicKeyX962())
@@ -170,7 +175,8 @@ object KeyAgreement {
         
         val pk1Picc = BrainpoolP256r1.publicKeyFromX962(pk1PiccData)
         
-        return keyPair1.paceMapNonce(nonceS, pk1Picc)
+        val (pk2Pcd, keyPair2, gTilde) = keyPair1.paceMapNonceWithGenerator(nonceS, pk1Picc)
+        return Triple(pk2Pcd, keyPair2, gTilde)
     }
     
     /**
@@ -180,7 +186,8 @@ object KeyAgreement {
     private suspend fun step3PaceEcdhGmAesCbcCmac128(
         card: HealthCardType,
         pk2Pcd: ECPublicKey,
-        keyPair2: BrainpoolP256r1.KeyExchangeKeyPair
+        keyPair2: BrainpoolP256r1.KeyExchangeKeyPair,
+        gTilde: org.bouncycastle.math.ec.ECPoint
     ): Pair<ECPublicKey, AES128PaceKey> {
         val pk2PcdX962 = ecPublicKeyToX962(pk2Pcd)
         val paceStep3Command = HealthCardCommand.PACE.step3a(pk2PcdX962)
@@ -192,7 +199,8 @@ object KeyAgreement {
         val pk2PiccData = extractPrimitive(pk2PiccResponseData)
             ?: throw Error.UnexpectedFormedAnswerFromCard
         
-        val pk2Picc = BrainpoolP256r1.publicKeyFromX962(pk2PiccData)
+        // Decode card's public key with the modified generator gTilde
+        val pk2Picc = BrainpoolP256r1.publicKeyFromX962(pk2PiccData, gTilde)
         val paceKeyData = BrainpoolP256r1.derivePaceKey(pk2Picc, keyPair2)
         val paceKey = AES128PaceKey(paceKeyData.enc, paceKeyData.mac)
         
@@ -241,33 +249,34 @@ object KeyAgreement {
         return try {
             ASN1InputStream(constructedAsn1).use { stream ->
                 val obj = stream.readObject()
-                when (obj) {
-                    is ASN1Sequence -> {
-                        val firstElement = obj.getObjectAt(0)
-                        when (firstElement) {
-                            is ASN1TaggedObject -> {
-                                val primitive = firstElement.baseObject
-                                when (primitive) {
-                                    is DEROctetString -> primitive.octets
-                                    else -> null
-                                }
-                            }
-                            is DEROctetString -> firstElement.octets
-                            else -> null
-                        }
-                    }
-                    is ASN1TaggedObject -> {
-                        val primitive = obj.baseObject
-                        when (primitive) {
-                            is DEROctetString -> primitive.octets
-                            else -> null
-                        }
-                    }
-                    else -> null
-                }
+                extractFromAsn1Object(obj)
             }
         } catch (e: Exception) {
+            android.util.Log.e("KeyAgreement", "Exception in extractPrimitive: ${e.message}", e)
             null
+        }
+    }
+    
+    /**
+     * Recursively extract octet string from ASN.1 object
+     */
+    private fun extractFromAsn1Object(obj: Any?): ByteArray? {
+        return when (obj) {
+            is ASN1Sequence -> {
+                val firstElement = obj.getObjectAt(0)
+                extractFromAsn1Object(firstElement)
+            }
+            is ASN1TaggedObject -> {
+                val baseObject = obj.baseObject
+                // Recursively extract from nested tagged objects
+                extractFromAsn1Object(baseObject)
+            }
+            is DEROctetString -> {
+                obj.octets
+            }
+            else -> {
+                null
+            }
         }
     }
     
@@ -284,21 +293,32 @@ object KeyAgreement {
      * Structure: [0x7F49] { [0x06] OID, [0x86] publicKey }
      */
     private fun createAsn1AuthToken(publicKeyX962: ByteArray, protocolId: String): ByteArray {
-        // Create OID
+        // Encode OID with primitive tag 0x06
         val oid = ASN1ObjectIdentifier(protocolId)
-        val taggedOid = DERTaggedObject(false, 0x06, oid)
+        val oidEncoded = oid.encoded  // This includes the tag 0x06
         
-        // Create public key tagged object
-        val publicKeyOctet = DEROctetString(publicKeyX962)
-        val taggedPublicKey = DERTaggedObject(false, 0x06, publicKeyOctet)
+        // Create public key with context-specific tag 0x86
+        val publicKeyEncoded = ByteArray(2 + publicKeyX962.size)
+        publicKeyEncoded[0] = 0x86.toByte()
+        publicKeyEncoded[1] = publicKeyX962.size.toByte()
+        System.arraycopy(publicKeyX962, 0, publicKeyEncoded, 2, publicKeyX962.size)
         
-        // Create sequence
-        val sequence = DERSequence(arrayOf(taggedOid, taggedPublicKey))
+        // Create SEQUENCE
+        val sequenceLength = oidEncoded.size + publicKeyEncoded.size
+        val sequenceBytes = ByteArray(2 + sequenceLength)
+        sequenceBytes[0] = 0x30.toByte() // SEQUENCE tag
+        sequenceBytes[1] = sequenceLength.toByte()
+        System.arraycopy(oidEncoded, 0, sequenceBytes, 2, oidEncoded.size)
+        System.arraycopy(publicKeyEncoded, 0, sequenceBytes, 2 + oidEncoded.size, publicKeyEncoded.size)
         
-        // Wrap in application tag 0x49 (0x7F49)
-        val appSpecific = DERApplicationSpecific(0x49, sequence)
+        // Wrap in application tag 0x7F49
+        val result = ByteArray(3 + sequenceLength)
+        result[0] = 0x7F.toByte()
+        result[1] = 0x49.toByte()
+        result[2] = sequenceLength.toByte()
+        System.arraycopy(sequenceBytes, 2, result, 3, sequenceLength)
         
-        return appSpecific.encoded
+        return result
     }
     
     /**

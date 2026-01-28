@@ -88,7 +88,7 @@ class NFCCard(
         }
         
         // Send MANAGE CHANNEL command to open a new logical channel
-        val manageChannelCommandOpen = APDU.Command(
+        val manageChannelCommandOpen = APDU.Command.create(
             cla = 0x00u,
             ins = 0x70u,
             p1 = 0x00u,
@@ -98,7 +98,7 @@ class NFCCard(
         
         val response = openBasicChannel().transmit(manageChannelCommandOpen)
         
-        if (response.sw != 0x9000) {
+        if (response.sw != 0x9000u.toUShort()) {
             throw CardError.ConnectionError(
                 NFCCardError.TransferException(
                     "openLogicalChannel failed, response code: ${String.format("0x%04X", response.sw)}"

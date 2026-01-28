@@ -24,3 +24,7 @@ plugins {
 }
 
 include(":app")
+
+// Include the egk-library from the Android folder
+include(":egk-library")
+project(":egk-library").projectDir = file("../../Android/egk-library")

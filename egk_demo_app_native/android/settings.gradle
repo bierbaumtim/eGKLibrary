@@ -1,1 +1,5 @@
 rootProject.name = 'egk_demo_app_native'
+
+// Include the egk-library from the Android folder
+include ':egk-library'
+project(':egk-library').projectDir = new File(rootProject.projectDir, '../../Android/egk-library')

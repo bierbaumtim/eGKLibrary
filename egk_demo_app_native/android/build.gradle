@@ -48,6 +48,9 @@ android {
     }
 
     dependencies {
+        // eGK Library for PACE authentication and card communication
+        implementation(project(":egk-library"))
+        
         // Kotlin Coroutines for async NFC operations
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
         implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")

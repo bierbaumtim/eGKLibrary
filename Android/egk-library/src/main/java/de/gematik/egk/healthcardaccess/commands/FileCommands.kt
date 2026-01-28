@@ -173,7 +173,7 @@ object ReadCommands {
     ): HealthCardCommand {
         val p1: UByte = if (sfid != null) {
             // Set bit 8 and include SFID in bits 1-5
-            (0x80u or sfid.rawValue[0].toUByte()).toUByte()
+            (0x80u or sfid.rawValue[0].toUInt()).toUByte()
         } else {
             // High byte of offset
             ((offset shr 8) and 0xFF).toUByte()

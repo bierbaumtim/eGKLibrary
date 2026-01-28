@@ -44,6 +44,30 @@ class AES128PaceKey(
         const val BLOCK_SIZE = 16
         /** ISO/IEC 7816-4 padding tag */
         const val PADDING_DELIMITER: Byte = 0x80.toByte()
+        
+        /**
+         * Increment the Send Sequence Counter (SSC).
+         * 
+         * @param ssc The Send Sequence Counter to increment
+         * @return The incremented Send Sequence Counter
+         */
+        fun incrementSsc(ssc: ByteArray): ByteArray {
+            val result = ByteArray(ssc.size)
+            for (index in ssc.size - 1 downTo 0) {
+                val temp = ssc[index]
+                if (temp == 0xFF.toByte()) {
+                    result[index] = 0
+                } else {
+                    result[index] = (temp + 1).toByte()
+                    // Copy remaining bytes
+                    for (j in 0 until index) {
+                        result[j] = ssc[j]
+                    }
+                    break
+                }
+            }
+            return result
+        }
     }
     
     /**
@@ -54,16 +78,27 @@ class AES128PaceKey(
     
     override fun encrypt(command: CommandType): CommandType {
         secureMessagingSsc = incrementSsc(secureMessagingSsc)
-        val encryptedMessage = encryptCommand(command, enc, mac, secureMessagingSsc)
-        secureMessagingSsc = incrementSsc(secureMessagingSsc)
-        return encryptedMessage
+        return encryptCommand(command, enc, mac, secureMessagingSsc)
     }
     
     override fun decrypt(response: ResponseType): ResponseType {
+        // If response is an error (SW != 9000/61XX/62XX/63XX), return it as-is
+        // These responses are not encrypted
+        val sw1 = response.sw1.toInt() and 0xFF
+        if (sw1 != 0x90 && sw1 != 0x61 && sw1 != 0x62 && sw1 != 0x63) {
+            return response
+        }
+        
         val data = response.data
         if (data == null || data.size < 10) {
+            // Check if this is a warning status with no data (e.g., 6300, 63CX)
+            if (sw1 == 0x63 && (data == null || data.isEmpty())) {
+                return response
+            }
             throw SecureMessagingException.EncryptedResponseMalformed()
         }
+        
+        secureMessagingSsc = incrementSsc(secureMessagingSsc)
         return decryptResponse(response, enc, mac, secureMessagingSsc)
     }
     
@@ -86,7 +121,7 @@ class AES128PaceKey(
             throw SecureMessagingException.ApduAlreadyEncrypted()
         }
         
-        var header = byteArrayOf(command.cla, command.ins, command.p1, command.p2)
+        var header = byteArrayOf(command.cla.toByte(), command.ins.toByte(), command.p1.toByte(), command.p2.toByte())
         
         // Build encrypted data object (DO87)
         val dataObject: ByteArray = command.data?.let { data ->
@@ -141,14 +176,60 @@ class AES128PaceKey(
             else -> APDU.EXPECTED_LENGTH_WILDCARD_EXTENDED
         }
         
-        return APDU.Command(
-            cla = header[0],
-            ins = header[1],
-            p1 = header[2],
-            p2 = header[3],
+        return APDU.Command.create(
+            cla = header[0].toUByte(),
+            ins = header[1].toUByte(),
+            p1 = header[2].toUByte(),
+            p2 = header[3].toUByte(),
             data = newData,
             ne = setLe
         )
+    }
+    
+    /**
+     * Parse BER-TLV encoded data and return all TLV objects with their encoded form.
+     */
+    private fun parseTlvObjects(data: ByteArray): Map<Int, Pair<ByteArray, ByteArray>> {
+        val result = mutableMapOf<Int, Pair<ByteArray, ByteArray>>()
+        var offset = 0
+        
+        while (offset < data.size) {
+            if (offset + 2 > data.size) break
+            
+            val tlvStart = offset
+            val tag = data[offset].toInt() and 0xFF
+            offset++
+            
+            // Parse length
+            val firstLengthByte = data[offset].toInt() and 0xFF
+            offset++
+            
+            val length = when {
+                firstLengthByte <= 127 -> firstLengthByte
+                firstLengthByte == 0x81 -> {
+                    val len = data[offset].toInt() and 0xFF
+                    offset++
+                    len
+                }
+                firstLengthByte == 0x82 -> {
+                    val len = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+                    offset += 2
+                    len
+                }
+                else -> throw SecureMessagingException.EncryptedResponseMalformed()
+            }
+            
+            if (offset + length > data.size) {
+                throw SecureMessagingException.EncryptedResponseMalformed()
+            }
+            
+            val value = data.copyOfRange(offset, offset + length)
+            val encoded = data.copyOfRange(tlvStart, offset + length)
+            result[tag] = Pair(value, encoded)
+            offset += length
+        }
+        
+        return result
     }
     
     /**
@@ -170,58 +251,62 @@ class AES128PaceKey(
         val responseData = response.data
             ?: throw SecureMessagingException.EncryptedResponseMalformed()
         
-        if (responseData.size < 14) {
+        // Parse all TLV objects in response
+        val tlvObjects = parseTlvObjects(responseData)
+        
+        // MAC (tag 0x8E) is required
+        val macEntry = tlvObjects[0x8E]
+            ?: throw SecureMessagingException.EncryptedResponseMalformed()
+        val macBytes = macEntry.first
+        
+        if (macBytes.size != 8) {
             throw SecureMessagingException.EncryptedResponseMalformed()
         }
         
-        // Last 10 bytes contain the MAC tag (DO8E)
-        val tagData = responseData.copyOfRange(responseData.size - 10, responseData.size)
-        val protectedData = responseData.copyOfRange(0, responseData.size - 10)
+        // Calculate MAC for verification (all data except MAC tag itself)
+        // Reconstruct protected data from parsed TLVs (data + status, but not MAC)
+        var protectedData = ByteArray(0)
         
-        // Read MAC (required) - tag 0x8E, length 8
-        val macTag = parseTaggedObject(tagData)
-        if (macTag.first != 0x8E || macTag.second.size != 8) {
-            throw SecureMessagingException.EncryptedResponseMalformed()
-        }
-        val macBytes = macTag.second
+        // Add data tag if present (DO87 or DO81)
+        tlvObjects[0x87]?.second?.let { protectedData += it }
+        tlvObjects[0x81]?.second?.let { protectedData += it }
+        // Add status tag (DO99)
+        tlvObjects[0x99]?.second?.let { protectedData += it }
         
-        // Calculate MAC for verification
         val calculatedMac = calculateMac(mac, ssc, protectedData)
         if (!macBytes.contentEquals(calculatedMac)) {
             throw SecureMessagingException.MacVerificationFailed()
         }
         
-        // Read processing status (required) - tag 0x99, length 2
-        val statusData = protectedData.copyOfRange(protectedData.size - 4, protectedData.size)
-        val statusTag = parseTaggedObject(statusData)
-        if (statusTag.first != 0x99 || statusTag.second.size != 2) {
+        // Processing status (tag 0x99) is required
+        val statusBytes = tlvObjects[0x99]?.first
+            ?: throw SecureMessagingException.EncryptedResponseMalformed()
+        
+        if (statusBytes.size != 2) {
             throw SecureMessagingException.EncryptedResponseMalformed()
         }
-        val statusBytes = statusTag.second
         
-        // Decrypt data if present
-        val messageData = protectedData.copyOfRange(0, protectedData.size - 4)
-        return if (messageData.isNotEmpty()) {
-            val messageTag = parseTaggedObject(messageData)
-            
-            when (messageTag.first) {
-                0x87 -> {
-                    // Encrypted data - N033.800
-                    val initVector = AES.CBC128.encrypt(ssc, enc)
-                    // Skip first byte (padding indicator 0x01)
-                    val encryptedContent = messageTag.second.copyOfRange(1, messageTag.second.size)
-                    val paddedDecryptedData = AES.CBC128.decrypt(encryptedContent, enc, initVector)
-                    val decryptedData = paddedDecryptedData.removePadding()
-                    APDU.Response(decryptedData + statusBytes)
-                }
-                0x81 -> {
-                    // Data not encrypted - N033.600
-                    APDU.Response(messageTag.second + statusBytes)
-                }
-                else -> throw SecureMessagingException.EncryptedResponseMalformed()
+        // Check for data (tag 0x87 = encrypted, tag 0x81 = unencrypted)
+        return when {
+            tlvObjects.containsKey(0x87) -> {
+                // Encrypted data - N033.800
+                val encryptedData = tlvObjects[0x87]!!.first
+                val initVector = AES.CBC128.encrypt(ssc, enc)
+                // Skip first byte (padding indicator 0x01)
+                val encryptedContent = encryptedData.copyOfRange(1, encryptedData.size)
+                val paddedDecryptedData = AES.CBC128.decrypt(encryptedContent, enc, initVector)
+                val decryptedData = paddedDecryptedData.removePadding()
+                APDU.Response.create(decryptedData + statusBytes)
             }
-        } else {
-            APDU.Response(statusBytes)
+            tlvObjects.containsKey(0x81) -> {
+                // Data not encrypted - N033.600
+                val plainData = tlvObjects[0x81]!!.first
+                APDU.Response.create(plainData + statusBytes)
+            }
+            else -> {
+                // No data, just status
+                APDU.Response.create(statusBytes)
+            }
         }
     }
     
@@ -236,11 +321,28 @@ class AES128PaceKey(
     }
     
     /**
-     * Create a DER tagged object (context-specific, implicit).
+     * Create a BER-TLV tagged object for ISO 7816 secure messaging.
+     * Creates simple TLV structure: tag | length | value
      */
     private fun createTaggedObject(tag: Int, data: ByteArray): ByteArray {
-        val taggedObject = DERTaggedObject(false, tag, DEROctetString(data))
-        return taggedObject.encoded
+        // For ISO 7816 secure messaging, we need simple BER-TLV encoding
+        // Tag is single byte (0x87, 0x97, 0x8E, etc.)
+        // Length encoding:
+        //   - If length <= 127: single byte
+        //   - If length > 127: first byte = 0x80 + number of length bytes, then length bytes
+        
+        val lengthBytes = when {
+            data.size <= 127 -> byteArrayOf(data.size.toByte())
+            data.size <= 255 -> byteArrayOf(0x81.toByte(), data.size.toByte())
+            data.size <= 65535 -> byteArrayOf(
+                0x82.toByte(),
+                ((data.size shr 8) and 0xFF).toByte(),
+                (data.size and 0xFF).toByte()
+            )
+            else -> throw IllegalArgumentException("Data too large for BER-TLV encoding: ${data.size}")
+        }
+        
+        return byteArrayOf(tag.toByte()) + lengthBytes + data
     }
     
     /**
@@ -269,32 +371,6 @@ class AES128PaceKey(
         } catch (e: Exception) {
             if (e is SecureMessagingException) throw e
             throw SecureMessagingException.EncryptedResponseMalformed()
-        }
-    }
-    
-    companion object {
-        /**
-         * Increment the Send Sequence Counter (SSC).
-         * 
-         * @param ssc The Send Sequence Counter to increment
-         * @return The incremented Send Sequence Counter
-         */
-        fun incrementSsc(ssc: ByteArray): ByteArray {
-            val result = ByteArray(ssc.size)
-            for (index in ssc.size - 1 downTo 0) {
-                val temp = ssc[index]
-                if (temp == 0xFF.toByte()) {
-                    result[index] = 0
-                } else {
-                    result[index] = (temp + 1).toByte()
-                    // Copy remaining bytes
-                    for (j in 0 until index) {
-                        result[j] = ssc[j]
-                    }
-                    break
-                }
-            }
-            return result
         }
     }
 }

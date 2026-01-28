@@ -121,7 +121,7 @@ suspend fun HealthCardType.readSelectedFile(
  * @throws SelectError if selection fails
  */
 suspend fun HealthCardType.selectDedicated(file: DedicatedFile): ResponseStatus {
-    val selectCommand = SelectCommands.selectFile(file.aid.rawValue)
+    val selectCommand = SelectCommands.selectFile(file.aid)
     val response = transmit(selectCommand)
     
     if (response.responseStatus != ResponseStatus.SUCCESS) {

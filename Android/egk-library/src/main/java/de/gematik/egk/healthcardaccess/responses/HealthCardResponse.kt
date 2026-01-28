@@ -33,7 +33,7 @@ data class HealthCardResponse(
     
     /** Parsed response status */
     val responseStatus: ResponseStatus
-        get() = ResponseStatus.fromSW(sw1, sw2)
+        get() = ResponseStatus.fromCode(sw1.toUByte(), sw2.toUByte())
     
     companion object {
         /**
@@ -42,8 +42,8 @@ data class HealthCardResponse(
         fun fromResponse(response: ResponseType): HealthCardResponse {
             return HealthCardResponse(
                 data = response.data,
-                sw1 = response.sw1,
-                sw2 = response.sw2
+                sw1 = response.sw1.toByte(),
+                sw2 = response.sw2.toByte()
             )
         }
     }

@@ -14,8 +14,6 @@
 
 package de.gematik.egk.healthcardcontrol.crypto
 
-import org.bouncycastle.asn1.x9.X9ECParameters
-import org.bouncycastle.crypto.ec.CustomNamedCurves
 import org.bouncycastle.crypto.params.ECDomainParameters
 import org.bouncycastle.jce.ECNamedCurveTable
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -47,16 +45,15 @@ object BrainpoolP256r1 {
         }
     }
     
-    private val ecParams: X9ECParameters = CustomNamedCurves.getByName(CURVE_NAME)
+    private val ecSpec: ECParameterSpec = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
+        ?: throw IllegalStateException("Curve $CURVE_NAME not found in BouncyCastle")
     
     private val domainParams = ECDomainParameters(
-        ecParams.curve,
-        ecParams.g,
-        ecParams.n,
-        ecParams.h
+        ecSpec.curve,
+        ecSpec.g,
+        ecSpec.n,
+        ecSpec.h
     )
-    
-    private val ecSpec: ECParameterSpec = ECNamedCurveTable.getParameterSpec(CURVE_NAME)
     
     /**
      * Represents an EC key pair for key exchange operations.
@@ -84,7 +81,7 @@ object BrainpoolP256r1 {
          * @return The shared secret
          */
         fun sharedSecret(peerPublicKey: ECPublicKey): ByteArray {
-            val keyAgreement = KeyAgreement.getInstance("ECDH", BouncyCastleProvider.PROVIDER_NAME)
+            val keyAgreement = KeyAgreement.getInstance("ECDH", BouncyCastleProvider())
             keyAgreement.init(privateKey)
             keyAgreement.doPhase(peerPublicKey, true)
             return keyAgreement.generateSecret()
@@ -100,6 +97,19 @@ object BrainpoolP256r1 {
          * @return Pair of new public key (PK2_PCD) and new key pair for final key derivation
          */
         fun paceMapNonce(nonce: ByteArray, peerKey1: ECPublicKey): Pair<ECPublicKey, KeyExchangeKeyPair> {
+            val (pk2Pcd, keyPair2, _) = paceMapNonceWithGenerator(nonce, peerKey1)
+            return Pair(pk2Pcd, keyPair2)
+        }
+        
+        /**
+         * Perform PACE nonce mapping to create a new generator point.
+         * Returns the generator for use in step 3.
+         * 
+         * @param nonce The decrypted nonce from the card (nonceS)
+         * @param peerKey1 The first public key received from the card (PK1_PICC)
+         * @return Triple of (PK2_PCD, KeyPair2, gTilde)
+         */
+        fun paceMapNonceWithGenerator(nonce: ByteArray, peerKey1: ECPublicKey): Triple<ECPublicKey, KeyExchangeKeyPair, ECPoint> {
             // 1. Calculate shared secret H = keyPair1.privateKey * PK1_PICC
             val sharedSecretBytes = sharedSecret(peerKey1)
             
@@ -108,8 +118,8 @@ object BrainpoolP256r1 {
             val nonceS = BigInteger(1, nonce)
             
             // Get the curve parameters
-            val curve = ecParams.curve
-            val basePoint = ecParams.g
+            val curve = ecSpec.curve
+            val basePoint = ecSpec.g
             
             // Convert shared secret to EC point (interpret as x-coordinate, derive y)
             // Actually, for PACE Generic Mapping, we need H as a point, not bytes
@@ -143,7 +153,7 @@ object BrainpoolP256r1 {
             val pk2Pcd = pointToPublicKey(pk2PcdPoint)
             val keyPair2 = createKeyPairFromPrivateValue(keyPair2PrivateValue, gTilde)
             
-            return Pair(pk2Pcd, keyPair2)
+            return Triple(pk2Pcd, keyPair2, gTilde)
         }
     }
     
@@ -151,7 +161,7 @@ object BrainpoolP256r1 {
      * Generate a new EC key pair on the Brainpool P256r1 curve.
      */
     fun generateKeyPair(): KeyExchangeKeyPair {
-        val keyPairGenerator = KeyPairGenerator.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+        val keyPairGenerator = KeyPairGenerator.getInstance("EC", BouncyCastleProvider())
         keyPairGenerator.initialize(ecSpec, SecureRandom())
         val keyPair = keyPairGenerator.generateKeyPair()
         return KeyExchangeKeyPair(
@@ -164,22 +174,46 @@ object BrainpoolP256r1 {
      * Create a public key from X9.62 encoded bytes.
      */
     fun publicKeyFromX962(data: ByteArray): ECPublicKey {
-        val point = ecParams.curve.decodePoint(data)
+        val point = ecSpec.curve.decodePoint(data)
         val javaSpec = java.security.spec.ECParameterSpec(
             java.security.spec.EllipticCurve(
-                java.security.spec.ECFieldFp(ecParams.curve.field.characteristic),
-                ecParams.curve.a.toBigInteger(),
-                ecParams.curve.b.toBigInteger()
+                java.security.spec.ECFieldFp(ecSpec.curve.field.characteristic),
+                ecSpec.curve.a.toBigInteger(),
+                ecSpec.curve.b.toBigInteger()
             ),
-            java.security.spec.ECPoint(ecParams.g.xCoord.toBigInteger(), ecParams.g.yCoord.toBigInteger()),
-            ecParams.n,
-            ecParams.h.intValueExact()
+            java.security.spec.ECPoint(ecSpec.g.xCoord.toBigInteger(), ecSpec.g.yCoord.toBigInteger()),
+            ecSpec.n,
+            ecSpec.h.intValueExact()
         )
         val pubKeySpec = ECPublicKeySpec(
             java.security.spec.ECPoint(point.xCoord.toBigInteger(), point.yCoord.toBigInteger()),
             javaSpec
         )
-        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider())
+        return keyFactory.generatePublic(pubKeySpec) as ECPublicKey
+    }
+    
+    /**
+     * Create a public key from X9.62 encoded bytes with a custom generator point.
+     * Used in PACE step 3 where the generator has been modified by Generic Mapping.
+     */
+    fun publicKeyFromX962(data: ByteArray, generator: ECPoint): ECPublicKey {
+        val point = ecSpec.curve.decodePoint(data)
+        val javaSpec = java.security.spec.ECParameterSpec(
+            java.security.spec.EllipticCurve(
+                java.security.spec.ECFieldFp(ecSpec.curve.field.characteristic),
+                ecSpec.curve.a.toBigInteger(),
+                ecSpec.curve.b.toBigInteger()
+            ),
+            java.security.spec.ECPoint(generator.xCoord.toBigInteger(), generator.yCoord.toBigInteger()),
+            ecSpec.n,
+            ecSpec.h.intValueExact()
+        )
+        val pubKeySpec = ECPublicKeySpec(
+            java.security.spec.ECPoint(point.xCoord.toBigInteger(), point.yCoord.toBigInteger()),
+            javaSpec
+        )
+        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider())
         return keyFactory.generatePublic(pubKeySpec) as ECPublicKey
     }
     
@@ -206,42 +240,42 @@ object BrainpoolP256r1 {
             val bytes = ByteArray(32)
             random.nextBytes(bytes)
             privateValue = BigInteger(1, bytes)
-        } while (privateValue >= ecParams.n || privateValue == BigInteger.ZERO)
+        } while (privateValue >= ecSpec.n || privateValue == BigInteger.ZERO)
         return privateValue
     }
     
     private fun pointToPublicKey(point: ECPoint): ECPublicKey {
         val javaSpec = java.security.spec.ECParameterSpec(
             java.security.spec.EllipticCurve(
-                java.security.spec.ECFieldFp(ecParams.curve.field.characteristic),
-                ecParams.curve.a.toBigInteger(),
-                ecParams.curve.b.toBigInteger()
+                java.security.spec.ECFieldFp(ecSpec.curve.field.characteristic),
+                ecSpec.curve.a.toBigInteger(),
+                ecSpec.curve.b.toBigInteger()
             ),
-            java.security.spec.ECPoint(ecParams.g.xCoord.toBigInteger(), ecParams.g.yCoord.toBigInteger()),
-            ecParams.n,
-            ecParams.h.intValueExact()
+            java.security.spec.ECPoint(ecSpec.g.xCoord.toBigInteger(), ecSpec.g.yCoord.toBigInteger()),
+            ecSpec.n,
+            ecSpec.h.intValueExact()
         )
         val pubKeySpec = ECPublicKeySpec(
             java.security.spec.ECPoint(point.xCoord.toBigInteger(), point.yCoord.toBigInteger()),
             javaSpec
         )
-        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider())
         return keyFactory.generatePublic(pubKeySpec) as ECPublicKey
     }
     
     private fun createKeyPairFromPrivateValue(privateValue: BigInteger, generator: ECPoint): KeyExchangeKeyPair {
         val javaSpec = java.security.spec.ECParameterSpec(
             java.security.spec.EllipticCurve(
-                java.security.spec.ECFieldFp(ecParams.curve.field.characteristic),
-                ecParams.curve.a.toBigInteger(),
-                ecParams.curve.b.toBigInteger()
+                java.security.spec.ECFieldFp(ecSpec.curve.field.characteristic),
+                ecSpec.curve.a.toBigInteger(),
+                ecSpec.curve.b.toBigInteger()
             ),
             java.security.spec.ECPoint(generator.xCoord.toBigInteger(), generator.yCoord.toBigInteger()),
-            ecParams.n,
-            ecParams.h.intValueExact()
+            ecSpec.n,
+            ecSpec.h.intValueExact()
         )
         
-        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider.PROVIDER_NAME)
+        val keyFactory = KeyFactory.getInstance("EC", BouncyCastleProvider())
         
         // Private key
         val privKeySpec = ECPrivateKeySpec(privateValue, javaSpec)
