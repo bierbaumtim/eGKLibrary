@@ -1,0 +1,5 @@
+.DS_Store
+*.lock
+*.xcworkspacedata
+*.xcuserstate
+Package.resolved
