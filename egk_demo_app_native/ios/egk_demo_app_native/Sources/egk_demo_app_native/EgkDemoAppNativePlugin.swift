@@ -167,7 +167,7 @@ public class EgkDemoAppNativePlugin: NSObject, FlutterPlugin {
         )
         
         let personalDataXml = try decompressEF_PDData(data: personalDataRaw)
-        let parsedPersonalData = parsePersonalDataXml(personalDataXml)
+        // let parsedPersonalData = parsePersonalDataXml(personalDataXml)
         
         // Read Insurance Data (EF.VD)
         session.updateAlert(message: "Lese Versicherungsdaten...")
@@ -185,15 +185,15 @@ public class EgkDemoAppNativePlugin: NSObject, FlutterPlugin {
         )
         
         let insuranceDataXml = try decompressEF_VDData(data: insuranceDataRaw)
-        let parsedInsuranceData = parseInsuranceDataXml(insuranceDataXml)
+        let secureInsuranceDataXml = try decompress_EF_GVDData(data: insuranceDataRaw)
+        // let parsedInsuranceData = parseInsuranceDataXml(insuranceDataXml)
         
         session.updateAlert(message: "Daten erfolgreich gelesen")
         
         return [
-            "personalData": parsedPersonalData,
-            "insuranceData": parsedInsuranceData,
             "rawPersonalDataXml": personalDataXml,
-            "rawInsuranceDataXml": insuranceDataXml
+            "rawInsuranceDataXml": insuranceDataXml,
+            "rawSecureInsuranceDataXml": secureInsuranceDataXml,
         ]
     }
     
@@ -312,6 +312,50 @@ extension EgkDemoAppNativePlugin {
         }
         
         // Per spec: "Der zu verwendende Zeichensatz für die fachlichen Inhalte ist ISO8859-15"
+        guard let xmlString = String(data: decompressedData, encoding: .isoLatin1)
+                ?? String(data: decompressedData, encoding: .utf8) else {
+            throw EgkReadError.decompressionFailed
+        }
+        
+        return xmlString
+    }
+
+    private func decompress_EF_GVDData(data: Data) throws -> String {
+        // EF.VD structure according to gemSpec_eGK_Fach_VSDM:
+        // - Offset Start VD: 2 bytes (big-endian)
+        // - Offset Ende VD: 2 bytes (big-endian)
+        // - Offset Start GVD: 2 bytes (big-endian)
+        // - Offset Ende GVD: 2 bytes (big-endian)
+        // - VD data: variable (gzip compressed XML)
+        // - GVD data: variable (gzip compressed XML, optional)
+        // Minimum offset value is 8 (header size)
+
+        guard data.count >= 8 else {
+            throw EgkReadError.invalidData
+        }
+        
+        // Read GVD offsets as big-endian
+        let gvdOffsetStart = Int(UInt16(data[4]) << 8 | UInt16(data[5]))
+        let gvdOffsetEnd = Int(UInt16(data[6]) << 8 | UInt16(data[7]))
+        
+        // Validate offsets before accessing
+        guard gvdOffsetStart >= 8,
+              gvdOffsetEnd > gvdOffsetStart,
+              gvdOffsetEnd <= data.count else {
+            throw EgkReadError.invalidData
+        }
+        
+        // Extract compressed GVD data
+        let compressedData = Data(data.subdata(in: gvdOffsetStart..<gvdOffsetEnd + 1))
+        
+        // Decompress gzip data
+        let decompressedData: Data
+        if compressedData.isGzipped {
+            decompressedData = try compressedData.gunzipped()
+        } else {
+            decompressedData = compressedData
+        }
+        
         guard let xmlString = String(data: decompressedData, encoding: .isoLatin1)
                 ?? String(data: decompressedData, encoding: .utf8) else {
             throw EgkReadError.decompressionFailed

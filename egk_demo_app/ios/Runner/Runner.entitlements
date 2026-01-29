@@ -7,5 +7,7 @@
 		<string>TAG</string>
 		<string>PACE</string>
 	</array>
+	<key>keychain-access-groups</key>
+	<array/>
 </dict>
 </plist>

@@ -39,7 +39,7 @@ class MethodChannelEgkDemoAppNative extends EgkDemoAppNativePlatform {
   }
 
   @override
-  Future<EgkData> readEgkData(String can) async {
+  Future<EGKDaten> readEgkData(String can) async {
     try {
       final result = await methodChannel.invokeMethod<Map<dynamic, dynamic>>(
         'readEgkData',
@@ -53,7 +53,7 @@ class MethodChannelEgkDemoAppNative extends EgkDemoAppNativePlatform {
         );
       }
 
-      return EgkData.fromMap(Map<String, dynamic>.from(result));
+      return EGKDaten.fromJson(Map<String, dynamic>.from(result));
     } on PlatformException catch (e) {
       throw PlatformException(
         code: e.code,
@@ -75,7 +75,7 @@ class MethodChannelEgkDemoAppNative extends EgkDemoAppNativePlatform {
     eventChannel.receiveBroadcastStream().listen(
       (event) {
         if (event is String) {
-          final state = _parseSessionState(event);
+          final state = NfcSessionState.fromString(event);
           _stateController?.add(state);
         }
       },
@@ -85,26 +85,5 @@ class MethodChannelEgkDemoAppNative extends EgkDemoAppNativePlatform {
     );
 
     return _stateController!.stream;
-  }
-
-  NfcSessionState _parseSessionState(String state) {
-    switch (state) {
-      case 'idle':
-        return NfcSessionState.idle;
-      case 'discovering':
-        return NfcSessionState.discovering;
-      case 'connecting':
-        return NfcSessionState.connecting;
-      case 'establishingSecureChannel':
-        return NfcSessionState.establishingSecureChannel;
-      case 'reading':
-        return NfcSessionState.reading;
-      case 'success':
-        return NfcSessionState.success;
-      case 'error':
-        return NfcSessionState.error;
-      default:
-        return NfcSessionState.idle;
-    }
   }
 }

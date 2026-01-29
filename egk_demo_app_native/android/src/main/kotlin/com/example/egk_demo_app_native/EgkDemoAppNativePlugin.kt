@@ -220,7 +220,6 @@ class EgkDemoAppNativePlugin :
             }
             
             val personalDataXml = decompressAndDecodeEF_PD(personalData)
-            val parsedPersonalData = parsePersonalDataXml(personalDataXml)
             
             // Read EF.VD (Insurance Data) - SFID: 02
             // First read to get the header with offsets (8 bytes)
@@ -244,13 +243,12 @@ class EgkDemoAppNativePlugin :
             }
             
             val insuranceDataXml = decompressAndDecodeEF_VD(insuranceData)
-            val parsedInsuranceData = parseInsuranceDataXml(insuranceDataXml)
+            val secureInsuranceDataXml = decompressAndDecodeEF_GVD(insuranceData)
             
             return mapOf(
-                "personalData" to parsedPersonalData,
-                "insuranceData" to parsedInsuranceData,
                 "rawPersonalDataXml" to personalDataXml,
-                "rawInsuranceDataXml" to insuranceDataXml
+                "rawInsuranceDataXml" to insuranceDataXml,
+                "rawSecureInsuranceDataXml" to secureInsuranceDataXml
             )
         } finally {
             nfcCard.disconnect(false)
@@ -294,6 +292,43 @@ class EgkDemoAppNativePlugin :
         // Read offsets as big-endian (different from EF.PD which uses little-endian length)
         val vdOffsetStart = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
         val vdOffsetEnd = ((data[2].toInt() and 0xFF) shl 8) or (data[3].toInt() and 0xFF)
+        // Bytes 4-7 are GVD offsets (Offset Start GVD, Offset Ende GVD) - not needed for VD
+        
+        if (vdOffsetStart < 8 || vdOffsetEnd >= data.size || vdOffsetStart >= vdOffsetEnd) {
+            throw Exception("Invalid VD offsets: start=$vdOffsetStart, end=$vdOffsetEnd, dataSize=${data.size}")
+        }
+
+        // Extract range [vdOffsetStart, vdOffsetEnd] inclusive (matching iOS implementation)
+        val compressedData = data.copyOfRange(vdOffsetStart, vdOffsetEnd + 1)
+
+        // Check if data is gzip compressed (magic bytes 1f 8b)
+        val decompressedData = if (compressedData.size >= 2 &&
+            compressedData[0] == 0x1F.toByte() &&
+            compressedData[1] == 0x8B.toByte()) {
+            decompressGzip(compressedData)
+        } else {
+            compressedData
+        }
+
+        return String(decompressedData, Charsets.UTF_8)
+    }
+
+    private fun decompressAndDecodeEF_GVD(data: ByteArray): String {
+        // EF.VD structure according to gemSpec_eGK_Fach_VSDM:
+        // - Offset Start VD: 2 bytes (big-endian)
+        // - Offset Ende VD: 2 bytes (big-endian)
+        // - Offset Start GVD: 2 bytes (big-endian)
+        // - Offset Ende GVD: 2 bytes (big-endian)
+        // - VD data: variable (gzip compressed XML)
+        // - GVD data: variable (gzip compressed XML, optional)
+        // Minimum offset value is 8 (header size)
+        if (data.size < 8) {
+            throw Exception("Data too short")
+        }
+
+        // Read offsets as big-endian (different from EF.PD which uses little-endian length)
+        val vdOffsetStart = ((data[4].toInt() and 0xFF) shl 8) or (data[5].toInt() and 0xFF)
+        val vdOffsetEnd = ((data[6].toInt() and 0xFF) shl 8) or (data[7].toInt() and 0xFF)
         // Bytes 4-7 are GVD offsets (Offset Start GVD, Offset Ende GVD) - not needed for VD
         
         if (vdOffsetStart < 8 || vdOffsetEnd >= data.size || vdOffsetStart >= vdOffsetEnd) {

@@ -22,7 +22,7 @@ class EgkDemoAppNative {
   ///
   /// [can] - The 6-digit Card Access Number printed on the card
   /// Returns [EgkData] with personal and insurance information
-  Future<EgkData> readEgkData(String can) {
+  Future<EGKDaten> readEgkData(String can) {
     return EgkDemoAppNativePlatform.instance.readEgkData(can);
   }
 

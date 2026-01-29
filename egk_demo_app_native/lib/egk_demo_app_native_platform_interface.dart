@@ -42,7 +42,7 @@ abstract class EgkDemoAppNativePlatform extends PlatformInterface {
   ///
   /// [can] - Card Access Number (6 digits printed on the card)
   /// Returns [EgkData] containing personal and insurance data
-  Future<EgkData> readEgkData(String can) {
+  Future<EGKDaten> readEgkData(String can) {
     throw UnimplementedError('readEgkData() has not been implemented.');
   }
 

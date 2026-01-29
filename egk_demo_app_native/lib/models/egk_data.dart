@@ -1,281 +1,333 @@
-/// Data models for German electronic health card (eGK) data
-/// Based on VSD Schema (Versichertenstammdaten)
+// Data models for German electronic health card (eGK) data
+// Based on VSD Schema (Versichertenstammdaten)
 
-/// Personal insurance data from UC_PersoenlicheVersichertendatenXML
-class PersonalData {
-  final String insurantId;
-  final String? birthDate;
-  final String firstName;
-  final String lastName;
-  final String? gender;
-  final String? namePrefix; // Vorsatzwort
-  final String? nameSuffix; // Namenszusatz
-  final String? title;
-  final StreetAddress? streetAddress;
-  final PostOfficeAddress? postOfficeAddress;
+import 'package:xml/xml.dart';
+import 'package:xml/xpath.dart';
 
-  PersonalData({
-    required this.insurantId,
-    this.birthDate,
-    required this.firstName,
-    required this.lastName,
-    this.gender,
-    this.namePrefix,
-    this.nameSuffix,
-    this.title,
-    this.streetAddress,
-    this.postOfficeAddress,
+/// Complete eGK data container
+class EGKDaten {
+  final PersoenlicheVersichertenDaten? persoenlicheVersichertenDaten;
+  final AllgemeineVersicherungsdaten? allgemeineVersicherungsdaten;
+  final String? rawPersonalDataXml;
+  final String? rawInsuranceDataXml;
+  final String? rawSecureInsuranceDataXml;
+
+  const EGKDaten({
+    this.persoenlicheVersichertenDaten,
+    this.allgemeineVersicherungsdaten,
+    this.rawPersonalDataXml,
+    this.rawInsuranceDataXml,
+    this.rawSecureInsuranceDataXml,
   });
 
-  factory PersonalData.fromMap(Map<String, dynamic> map) {
-    return PersonalData(
-      insurantId: map['insurantId'] ?? '',
-      birthDate: map['birthDate'],
-      firstName: map['firstName'] ?? '',
-      lastName: map['lastName'] ?? '',
-      gender: map['gender'],
-      namePrefix: map['namePrefix'],
-      nameSuffix: map['nameSuffix'],
-      title: map['title'],
-      streetAddress: map['streetAddress'] != null
-          ? StreetAddress.fromMap(
-              Map<String, dynamic>.from(map['streetAddress']),
-            )
-          : null,
-      postOfficeAddress: map['postOfficeAddress'] != null
-          ? PostOfficeAddress.fromMap(
-              Map<String, dynamic>.from(map['postOfficeAddress']),
-            )
-          : null,
+  factory EGKDaten.fromJson(Map<String, dynamic> map) {
+    final rawPersonalDataXml = map['rawPersonalDataXml'];
+    final rawInsuranceDataXml = map['rawInsuranceDataXml'];
+    final rawSecureInsuranceDataXml = map['rawSecureInsuranceDataXml'];
+
+    return EGKDaten(
+      persoenlicheVersichertenDaten: switch (rawPersonalDataXml) {
+        String xml when xml.isNotEmpty => PersoenlicheVersichertenDaten.fromXml(
+          xml,
+        ),
+        _ => null,
+      },
+      allgemeineVersicherungsdaten: switch (rawInsuranceDataXml) {
+        final xml? when xml.isNotEmpty => AllgemeineVersicherungsdaten.fromXml(
+          xml,
+        ),
+        _ => null,
+      },
+      rawPersonalDataXml: rawPersonalDataXml,
+      rawInsuranceDataXml: rawInsuranceDataXml,
+      rawSecureInsuranceDataXml: rawSecureInsuranceDataXml,
     );
   }
 
-  Map<String, dynamic> toMap() {
-    return {
-      'insurantId': insurantId,
-      'birthDate': birthDate,
-      'firstName': firstName,
-      'lastName': lastName,
-      'gender': gender,
-      'namePrefix': namePrefix,
-      'nameSuffix': nameSuffix,
-      'title': title,
-      'streetAddress': streetAddress?.toMap(),
-      'postOfficeAddress': postOfficeAddress?.toMap(),
-    };
+  Map<String, dynamic> toJson() => {
+    'rawPersonalDataXml': rawPersonalDataXml,
+    'rawInsuranceDataXml': rawInsuranceDataXml,
+    'rawSecureInsuranceDataXml': rawSecureInsuranceDataXml,
+  };
+}
+
+/// Personal insurance data from UC_PersoenlicheVersichertendatenXML
+class PersoenlicheVersichertenDaten {
+  final String insurantId;
+  final String? geburtsdatum;
+  final String vorname;
+  final String nachname;
+  final String? geschlecht;
+  final String? vorsatzwort; // Vorsatzwort
+  final String? namenszusatz; // Namenszusatz
+  final String? titel;
+  final StrassenAdresse? strassenAdresse;
+  final PostfachAdresse? postfachAdresse;
+
+  const PersoenlicheVersichertenDaten({
+    required this.insurantId,
+    this.geburtsdatum,
+    required this.vorname,
+    required this.nachname,
+    this.geschlecht,
+    this.vorsatzwort,
+    this.namenszusatz,
+    this.titel,
+    this.strassenAdresse,
+    this.postfachAdresse,
+  });
+
+  static PersoenlicheVersichertenDaten? fromXml(String xml) {
+    final document = XmlDocument.parse(xml);
+    final insurant = document
+        .xpath('/UC_PersoenlicheVersichertendatenXML/Versicherter')
+        .firstOrNull;
+    if (insurant == null) return null;
+
+    final person = insurant.xpath('Person').firstOrNull;
+    final postOfficeAdress = person?.xpath('PostfachAdresse').firstOrNull;
+    final streetAddress = person?.xpath('StrassenAdresse').firstOrNull;
+
+    return PersoenlicheVersichertenDaten(
+      insurantId: insurant.getElement('Versicherten_ID')?.innerText ?? '',
+      geburtsdatum: person?.getElement('Geburtsdatum')?.innerText,
+      vorname: person?.getElement('Vorname')?.innerText ?? '',
+      nachname: person?.getElement('Nachname')?.innerText ?? '',
+      geschlecht: person?.getElement('Geschlecht')?.innerText,
+      vorsatzwort: person
+          ?.findElements('Vorsatzwort')
+          .map((e) => e.innerText)
+          .join(' '),
+      namenszusatz: person
+          ?.findElements('Namenszusatz')
+          .map((e) => e.innerText)
+          .join(' '),
+      titel: person?.findElements('Titel').map((e) => e.innerText).join(' '),
+      strassenAdresse: switch (streetAddress) {
+        final addr? => StrassenAdresse.fromXmlNode(addr),
+        _ => null,
+      },
+      postfachAdresse: switch (postOfficeAdress) {
+        final addr? => PostfachAdresse.fromXmlNode(addr),
+        _ => null,
+      },
+    );
   }
 
   String get fullName {
     final parts = <String>[];
-    if (title != null && title!.isNotEmpty) parts.add(title!);
-    if (namePrefix != null && namePrefix!.isNotEmpty) parts.add(namePrefix!);
-    parts.add(firstName);
-    if (nameSuffix != null && nameSuffix!.isNotEmpty) parts.add(nameSuffix!);
-    parts.add(lastName);
+    if (titel != null && titel!.isNotEmpty) parts.add(titel!);
+    if (vorsatzwort case final vorsatzwort? when vorsatzwort.isNotEmpty) {
+      parts.add(vorsatzwort);
+    }
+    parts.add(vorname);
+    if (namenszusatz case final namenszusatz? when namenszusatz.isNotEmpty) {
+      parts.add(namenszusatz);
+    }
+    parts.add(nachname);
+
     return parts.join(' ');
   }
 
-  String get genderDisplay {
-    switch (gender) {
-      case 'M':
-        return 'Männlich';
-      case 'W':
-        return 'Weiblich';
-      case 'X':
-        return 'Unbestimmt';
-      case 'D':
-        return 'Divers';
-      default:
-        return gender ?? 'Unbekannt';
-    }
-  }
+  String get genderDisplay => switch (geschlecht) {
+    'M' => 'Männlich',
+    'W' => 'Weiblich',
+    'X' => 'Unbestimmt',
+    'D' => 'Divers',
+    null => 'Unbekannt',
+    final other => other,
+  };
 
   String? get formattedBirthDate {
-    if (birthDate == null || birthDate!.length != 8) return birthDate;
+    if (geburtsdatum == null || geburtsdatum!.length != 8) return geburtsdatum;
     // Format: YYYYMMDD -> DD.MM.YYYY
-    final year = birthDate!.substring(0, 4);
-    final month = birthDate!.substring(4, 6);
-    final day = birthDate!.substring(6, 8);
+    final year = geburtsdatum!.substring(0, 4);
+    final month = geburtsdatum!.substring(4, 6);
+    final day = geburtsdatum!.substring(6, 8);
+
     return '$day.$month.$year';
   }
 }
 
 /// Street address from StrassenAdresse
-class StreetAddress {
-  final String? postalCode;
-  final String city;
-  final String countryCode;
-  final String? street;
-  final String? houseNumber;
-  final String? addressSupplement;
+class StrassenAdresse {
+  final String? postleitzahl;
+  final String ort;
+  final String land;
+  final String? strasse;
+  final String? hausnummer;
+  final String? anschriftenzusatz;
 
-  StreetAddress({
-    this.postalCode,
-    required this.city,
-    required this.countryCode,
-    this.street,
-    this.houseNumber,
-    this.addressSupplement,
+  const StrassenAdresse({
+    this.postleitzahl,
+    required this.ort,
+    required this.land,
+    this.strasse,
+    this.hausnummer,
+    this.anschriftenzusatz,
   });
 
-  factory StreetAddress.fromMap(Map<String, dynamic> map) {
-    return StreetAddress(
-      postalCode: map['postalCode'],
-      city: map['city'] ?? '',
-      countryCode: map['countryCode'] ?? '',
-      street: map['street'],
-      houseNumber: map['houseNumber'],
-      addressSupplement: map['addressSupplement'],
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'postalCode': postalCode,
-      'city': city,
-      'countryCode': countryCode,
-      'street': street,
-      'houseNumber': houseNumber,
-      'addressSupplement': addressSupplement,
-    };
-  }
+  static StrassenAdresse fromXmlNode(XmlNode node) => StrassenAdresse(
+    postleitzahl: node.getElement('Postleitzahl')?.innerText,
+    ort: node.getElement('Ort')?.innerText ?? '',
+    land: node.getElement('Land')?.innerText ?? '',
+    strasse: node.getElement('Strasse')?.innerText,
+    hausnummer: node.getElement('Hausnummer')?.innerText,
+    anschriftenzusatz: node.getElement('Anschriftenzusatz')?.innerText,
+  );
 
   String get formattedAddress {
     final lines = <String>[];
-    if (street != null && street!.isNotEmpty) {
-      final streetLine = houseNumber != null && houseNumber!.isNotEmpty
-          ? '$street $houseNumber'
-          : street!;
+    if (strasse case final strasse? when strasse.isNotEmpty) {
+      final streetLine = hausnummer != null && hausnummer!.isNotEmpty
+          ? '$strasse $hausnummer'
+          : strasse;
       lines.add(streetLine);
     }
-    if (addressSupplement != null && addressSupplement!.isNotEmpty) {
-      lines.add(addressSupplement!);
+    if (anschriftenzusatz case final anschriftenzusatz?
+        when anschriftenzusatz.isNotEmpty) {
+      lines.add(anschriftenzusatz);
     }
-    final cityLine = postalCode != null && postalCode!.isNotEmpty
-        ? '$postalCode $city'
-        : city;
+    final cityLine = postleitzahl != null && postleitzahl!.isNotEmpty
+        ? '$postleitzahl $ort'
+        : ort;
     lines.add(cityLine);
-    if (countryCode.isNotEmpty && countryCode != 'D') {
-      lines.add(countryCode);
+    if (land.isNotEmpty && land != 'D') {
+      lines.add(land);
     }
+
     return lines.join('\n');
   }
 }
 
 /// Post office address from PostfachAdresse
-class PostOfficeAddress {
-  final String? postalCode;
-  final String city;
-  final String postOfficeBox;
-  final String countryCode;
+class PostfachAdresse {
+  final String? postleitzahl;
+  final String ort;
+  final String postfach;
+  final String land;
 
-  PostOfficeAddress({
-    this.postalCode,
-    required this.city,
-    required this.postOfficeBox,
-    required this.countryCode,
+  const PostfachAdresse({
+    this.postleitzahl,
+    required this.ort,
+    required this.postfach,
+    required this.land,
   });
 
-  factory PostOfficeAddress.fromMap(Map<String, dynamic> map) {
-    return PostOfficeAddress(
-      postalCode: map['postalCode'],
-      city: map['city'] ?? '',
-      postOfficeBox: map['postOfficeBox'] ?? '',
-      countryCode: map['countryCode'] ?? '',
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'postalCode': postalCode,
-      'city': city,
-      'postOfficeBox': postOfficeBox,
-      'countryCode': countryCode,
-    };
-  }
+  static PostfachAdresse fromXmlNode(XmlNode node) => PostfachAdresse(
+    postleitzahl: node.getElement('Postleitzahl')?.innerText,
+    ort: node.getElement('Ort')?.innerText ?? '',
+    postfach: node.getElement('Postfach')?.innerText ?? '',
+    land: node.getElement('Land')?.innerText ?? '',
+  );
 }
 
 /// Insurance data from UC_AllgemeineVersicherungsdatenXML
-class InsuranceData {
-  final String? coverageStart;
-  final String? coverageEnd;
-  final CostCarrier costCarrier;
-  final CostCarrier? billingCostCarrier;
-  final String? insurantType; // Versichertenart
+class AllgemeineVersicherungsdaten {
+  final String? versicherungsSchutzBeginn;
+  final String? versicherungsSchutzEnde;
+  final Kostentraeger kostentraeger;
+  final Kostentraeger? abrechnenderKostentraeger;
+  final String? versichertenart;
   final String? wop; // Wohnortprinzip
-  final CostReimbursement? costReimbursement;
+  final Kostenerstattung? kostenerstattung;
 
-  InsuranceData({
-    this.coverageStart,
-    this.coverageEnd,
-    required this.costCarrier,
-    this.billingCostCarrier,
-    this.insurantType,
+  const AllgemeineVersicherungsdaten({
+    this.versicherungsSchutzBeginn,
+    this.versicherungsSchutzEnde,
+    required this.kostentraeger,
+    this.abrechnenderKostentraeger,
+    this.versichertenart,
     this.wop,
-    this.costReimbursement,
+    this.kostenerstattung,
   });
 
-  factory InsuranceData.fromMap(Map<String, dynamic> map) {
-    return InsuranceData(
-      coverageStart: map['coverageStart'],
-      coverageEnd: map['coverageEnd'],
-      costCarrier: CostCarrier.fromMap(
-        Map<String, dynamic>.from(map['costCarrier'] ?? {}),
-      ),
-      billingCostCarrier: map['billingCostCarrier'] != null
-          ? CostCarrier.fromMap(
-              Map<String, dynamic>.from(map['billingCostCarrier']),
-            )
-          : null,
-      insurantType: map['insurantType'],
-      wop: map['wop'],
-      costReimbursement: map['costReimbursement'] != null
-          ? CostReimbursement.fromMap(
-              Map<String, dynamic>.from(map['costReimbursement']),
-            )
-          : null,
+  static AllgemeineVersicherungsdaten? fromXml(String xml) {
+    final document = XmlDocument.parse(xml);
+    final insurant = document
+        .xpath('/UC_AllgemeineVersicherungsdatenXML/Versicherter')
+        .firstOrNull;
+    if (insurant == null) return null;
+
+    final coverageNode = insurant.getElement('Versicherungsschutz');
+    final costCarrierNode = insurant.getElement('Kostentraeger');
+    final billingCostCarrierNode = costCarrierNode?.getElement(
+      'AbrechnungsKostentraeger',
+    );
+    final additionalInfoGKVNode = insurant
+        .xpath('//Zusatzinfos/ZusatzinfosGKV')
+        .firstOrNull;
+    final additionalInfoBillingGKVNode = additionalInfoGKVNode?.getElement(
+      'Zusatzinfos_Abrechnung_GKV',
+    );
+    final wop = additionalInfoBillingGKVNode?.getElement('WOP')?.innerText;
+
+    final costReimbursementNode = additionalInfoBillingGKVNode?.getElement(
+      'Kostenerstattung',
+    );
+
+    return AllgemeineVersicherungsdaten(
+      versicherungsSchutzBeginn: coverageNode?.getElement('Beginn')?.innerText,
+      versicherungsSchutzEnde: coverageNode?.getElement('Ende')?.innerText,
+      kostentraeger: switch (costCarrierNode) {
+        final node? => Kostentraeger.fromXmlNode(node),
+        _ => Kostentraeger(),
+      },
+      abrechnenderKostentraeger: switch (billingCostCarrierNode) {
+        final node? => Kostentraeger.fromXmlNode(node),
+        _ => null,
+      },
+      versichertenart: additionalInfoGKVNode
+          ?.getElement('Versichertenart')
+          ?.innerText,
+      wop: wop,
+      kostenerstattung: switch (costReimbursementNode) {
+        final node? => Kostenerstattung.fromXmlNode(node),
+        _ => null,
+      },
     );
   }
 
-  Map<String, dynamic> toMap() {
-    return {
-      'coverageStart': coverageStart,
-      'coverageEnd': coverageEnd,
-      'costCarrier': costCarrier.toMap(),
-      'billingCostCarrier': billingCostCarrier?.toMap(),
-      'insurantType': insurantType,
-      'wop': wop,
-      'costReimbursement': costReimbursement?.toMap(),
-    };
-  }
+  String get insurantTypeDisplay => switch (versichertenart) {
+    '1' => 'Mitglied',
+    '3' => 'Familienversicherter',
+    '5' => 'Rentner/Familienangehörige',
+    null => 'Unbekannt',
+    final other => other,
+  };
 
-  String get insurantTypeDisplay {
-    switch (insurantType) {
-      case '1':
-        return 'Mitglied';
-      case '3':
-        return 'Familienversicherter';
-      case '5':
-        return 'Rentner/Familienangehörige';
-      default:
-        return insurantType ?? 'Unbekannt';
-    }
-  }
+  /// Gemäß Anlage 21 BMV-Ä und EKV
+  String get wopDisplay => switch (wop) {
+    '01' => 'Schleswig-Holstein',
+    '02' => 'Hamburg',
+    '03' => 'Bremen',
+    '17' => 'Niedersachsen',
+    '20' => 'Westfalen-Lippe',
+    '38' => 'Nordrhein',
+    '46' => 'Hessen',
+    '51' => 'Rheinland-Pfalz',
+    '52' => 'Baden-Württemberg',
+    '71' => 'Bayerns',
+    '72' => 'Berlin',
+    '73' => 'Saarland',
+    '78' => 'Mecklenburg-Vorpommern',
+    '83' => 'Brandenburg',
+    '88' => 'Sachsen-Anhalt',
+    '93' => 'Thüringen',
+    '98' => 'Sachsen',
+    _ => 'Unbekannt',
+  };
 
-  String? get formattedCoverageStart {
-    return _formatDate(coverageStart);
-  }
+  String? get formattedCoverageStart => _formatDate(versicherungsSchutzBeginn);
 
-  String? get formattedCoverageEnd {
-    return _formatDate(coverageEnd);
-  }
+  String? get formattedCoverageEnd => _formatDate(versicherungsSchutzEnde);
 
   String? _formatDate(String? date) {
     if (date == null || date.length != 8) return date;
     if (DateTime.tryParse(date) case final dt?) {
       return '${dt.day.toString().padLeft(2, '0')}.${dt.month.toString().padLeft(2, '0')}.${dt.year}';
     }
-    
+
     final year = date.substring(0, 4);
     final month = date.substring(4, 6);
     final day = date.substring(6, 8);
@@ -284,97 +336,44 @@ class InsuranceData {
 }
 
 /// Cost carrier / insurance company
-class CostCarrier {
+class Kostentraeger {
   final String? identifier; // Kostentraegerkennung (IK)
   final String? countryCode;
   final String? name;
 
-  CostCarrier({this.identifier, this.countryCode, this.name});
+  const Kostentraeger({this.identifier, this.countryCode, this.name});
 
-  factory CostCarrier.fromMap(Map<String, dynamic> map) {
-    return CostCarrier(
-      identifier: map['identifier']?.toString(),
-      countryCode: map['countryCode'],
-      name: map['name'],
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {'identifier': identifier, 'countryCode': countryCode, 'name': name};
-  }
+  static Kostentraeger fromXmlNode(XmlNode node) => Kostentraeger(
+    identifier: node.getElement('Kostentraegerkennung')?.innerText,
+    countryCode: node.getElement('Kostentraegerlaendercode')?.innerText,
+    name: node.getElement('Name')?.innerText,
+  );
 }
 
 /// Cost reimbursement settings
-class CostReimbursement {
-  final bool medicalCare;
-  final bool dentalCare;
-  final bool inpatientCare;
-  final bool initiatedServices;
+class Kostenerstattung {
+  final bool aerztlicheVersorgung;
+  final bool zahnaerztlicheVersorgung;
+  final bool stationaererBereich;
+  final bool veranlassteLeistungen;
 
-  CostReimbursement({
-    required this.medicalCare,
-    required this.dentalCare,
-    required this.inpatientCare,
-    required this.initiatedServices,
+  const Kostenerstattung({
+    required this.aerztlicheVersorgung,
+    required this.zahnaerztlicheVersorgung,
+    required this.stationaererBereich,
+    required this.veranlassteLeistungen,
   });
 
-  factory CostReimbursement.fromMap(Map<String, dynamic> map) {
-    return CostReimbursement(
-      medicalCare: map['medicalCare'] == true || map['medicalCare'] == 1,
-      dentalCare: map['dentalCare'] == true || map['dentalCare'] == 1,
-      inpatientCare: map['inpatientCare'] == true || map['inpatientCare'] == 1,
-      initiatedServices:
-          map['initiatedServices'] == true || map['initiatedServices'] == 1,
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'medicalCare': medicalCare,
-      'dentalCare': dentalCare,
-      'inpatientCare': inpatientCare,
-      'initiatedServices': initiatedServices,
-    };
-  }
-}
-
-/// Complete eGK data container
-class EgkData {
-  final PersonalData? personalData;
-  final InsuranceData? insuranceData;
-  final String? rawPersonalDataXml;
-  final String? rawInsuranceDataXml;
-
-  EgkData({
-    this.personalData,
-    this.insuranceData,
-    this.rawPersonalDataXml,
-    this.rawInsuranceDataXml,
-  });
-
-  factory EgkData.fromMap(Map<String, dynamic> map) {
-    return EgkData(
-      personalData: map['personalData'] != null
-          ? PersonalData.fromMap(Map<String, dynamic>.from(map['personalData']))
-          : null,
-      insuranceData: map['insuranceData'] != null
-          ? InsuranceData.fromMap(
-              Map<String, dynamic>.from(map['insuranceData']),
-            )
-          : null,
-      rawPersonalDataXml: map['rawPersonalDataXml'],
-      rawInsuranceDataXml: map['rawInsuranceDataXml'],
-    );
-  }
-
-  Map<String, dynamic> toMap() {
-    return {
-      'personalData': personalData?.toMap(),
-      'insuranceData': insuranceData?.toMap(),
-      'rawPersonalDataXml': rawPersonalDataXml,
-      'rawInsuranceDataXml': rawInsuranceDataXml,
-    };
-  }
+  static Kostenerstattung fromXmlNode(XmlNode node) => Kostenerstattung(
+    aerztlicheVersorgung:
+        node.getElement('AerztlicheVersorgung')?.innerText == '1',
+    zahnaerztlicheVersorgung:
+        node.getElement('ZahnaerztlicheVersorgung')?.innerText == '1',
+    stationaererBereich:
+        node.getElement('StationaererBereich')?.innerText == '1',
+    veranlassteLeistungen:
+        node.getElement('VeranlassteLeistungen')?.innerText == '1',
+  );
 }
 
 /// NFC session state events
@@ -385,7 +384,18 @@ enum NfcSessionState {
   establishingSecureChannel,
   reading,
   success,
-  error,
+  error;
+
+  static NfcSessionState fromString(String state) => switch (state) {
+    'idle' => NfcSessionState.idle,
+    'discovering' => NfcSessionState.discovering,
+    'connecting' => NfcSessionState.connecting,
+    'establishingSecureChannel' => NfcSessionState.establishingSecureChannel,
+    'reading' => NfcSessionState.reading,
+    'success' => NfcSessionState.success,
+    'error' => NfcSessionState.error,
+    _ => NfcSessionState.idle,
+  };
 }
 
 /// NFC session error types
@@ -393,7 +403,7 @@ class NfcError {
   final String code;
   final String message;
 
-  NfcError({required this.code, required this.message});
+  const NfcError({required this.code, required this.message});
 
   factory NfcError.fromMap(Map<String, dynamic> map) {
     return NfcError(

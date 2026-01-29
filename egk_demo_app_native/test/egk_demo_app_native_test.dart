@@ -19,12 +19,12 @@ class MockEgkDemoAppNativePlatform
   Future<bool> isNfcEnabled() => Future.value(true);
 
   @override
-  Future<EgkData> readEgkData(String can) => Future.value(
-    EgkData(
-      personalData: PersonalData(
+  Future<EGKDaten> readEgkData(String can) => Future.value(
+    EGKDaten(
+      persoenlicheVersichertenDaten: PersoenlicheVersichertenDaten(
         insurantId: 'A123456789',
-        firstName: 'Max',
-        lastName: 'Mustermann',
+        vorname: 'Max',
+        nachname: 'Mustermann',
       ),
     ),
   );
@@ -66,8 +66,8 @@ void main() {
     EgkDemoAppNativePlatform.instance = fakePlatform;
 
     final data = await egkDemoAppNativePlugin.readEgkData('123456');
-    expect(data.personalData?.insurantId, 'A123456789');
-    expect(data.personalData?.firstName, 'Max');
-    expect(data.personalData?.lastName, 'Mustermann');
+    expect(data.persoenlicheVersichertenDaten?.insurantId, 'A123456789');
+    expect(data.persoenlicheVersichertenDaten?.vorname, 'Max');
+    expect(data.persoenlicheVersichertenDaten?.nachname, 'Mustermann');
   });
 }

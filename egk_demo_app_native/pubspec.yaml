@@ -10,7 +10,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
   plugin_platform_interface: ^2.0.2
+  xml: ^6.6.1
 
 dev_dependencies:
   flutter_test:
