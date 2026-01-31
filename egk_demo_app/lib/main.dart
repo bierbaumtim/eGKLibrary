@@ -1,9 +1,8 @@
-import 'package:egk_demo_app/egk_service.dart';
 import 'package:flutter/material.dart';
 
-import 'package:egk_demo_app/egk_reader_screen.dart';
-
-import 'storage_screen.dart';
+import 'services/egk_service.dart';
+import 'widgets/pages/egk_reader_screen.dart';
+import 'widgets/pages/storage_screen.dart';
 
 void main() {
   runApp(const MyApp());

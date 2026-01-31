@@ -1,9 +1,10 @@
 import 'dart:convert';
 
-import 'package:egk_demo_app_native/egk_demo_app_native.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
+import 'package:egk_demo_app_native/egk_demo_app_native.dart';
 
 class StorageService {
   static final StorageService instance = StorageService._internal();
@@ -21,19 +22,6 @@ class StorageService {
     );
   }
 
-  Future<void> saveEgkData(EGKDaten egkData) async {
-    final key =
-        egkData.persoenlicheVersichertenDaten?.insurantId ?? Uuid().v4();
-
-    await _secureStorage.write(key: key, value: json.encode(egkData));
-
-    final storedKeys = await _prefs.getStringList('stored_egk_keys') ?? [];
-    if (!storedKeys.contains(key)) {
-      storedKeys.add(key);
-      await _prefs.setStringList('stored_egk_keys', storedKeys);
-    }
-  }
-
   Future<List<EGKDaten>> getStoredEgkData() async {
     final storedKeys = await _prefs.getStringList('stored_egk_keys') ?? [];
     final List<EGKDaten> egkDataList = [];
@@ -49,5 +37,29 @@ class StorageService {
     }
 
     return egkDataList;
+  }
+
+  Future<void> saveEgkData(EGKDaten egkData) async {
+    final key =
+        egkData.persoenlicheVersichertenDaten?.insurantId ?? Uuid().v4();
+
+    await _secureStorage.write(key: key, value: json.encode(egkData));
+
+    final storedKeys = await _prefs.getStringList('stored_egk_keys') ?? [];
+    if (!storedKeys.contains(key)) {
+      storedKeys.add(key);
+      await _prefs.setStringList('stored_egk_keys', storedKeys);
+    }
+  }
+
+  Future<void> deleteEgkData(String insurantId) async {
+    await _secureStorage.delete(key: insurantId);
+
+    final storedKeys = await _prefs.getStringList('stored_egk_keys') ?? [];
+    if (storedKeys.contains(insurantId)) {
+      storedKeys.remove(insurantId);
+      await _secureStorage.delete(key: insurantId);
+      await _prefs.setStringList('stored_egk_keys', storedKeys);
+    }
   }
 }
